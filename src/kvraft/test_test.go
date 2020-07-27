@@ -223,6 +223,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 		if partitions {
 			// Allow the clients to perform some operations without interruption
 			time.Sleep(1 * time.Second)
+			DPrintf("---- Partition now ----")
 			go partitioner(t, cfg, ch_partitioner, &done_partitioner)
 		}
 		time.Sleep(5 * time.Second)
@@ -238,19 +239,20 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 			// won't return until that server discovers a new term
 			// has started.
 			cfg.ConnectAll()
+			DPrintf("---- All connected ----")
 			// wait for a while so that we have a new term
 			time.Sleep(electionTimeout)
 		}
 
 		if crash {
-			// log.Printf("shutdown servers\n")
+			log.Printf("---- shutdown servers ----\n")
 			for i := 0; i < nservers; i++ {
 				cfg.ShutdownServer(i)
 			}
 			// Wait for a while for servers to shutdown, since
 			// shutdown isn't a real crash and isn't instantaneous
 			time.Sleep(electionTimeout)
-			// log.Printf("restart servers\n")
+			log.Printf("---- restart servers ----\n")
 			// crash and re-start all
 			for i := 0; i < nservers; i++ {
 				cfg.StartServer(i)
@@ -647,6 +649,8 @@ func TestSnapshotRPC3B(t *testing.T) {
 		t.Fatalf("logs were not trimmed (%v > 8*%v)", sz, maxraftstate)
 	}
 
+	DPrintf("---- Catching up ----")
+
 	// now make group that requires participation of
 	// lagging server, so that it has to catch up.
 	cfg.partition([]int{0, 2}, []int{1})
@@ -659,6 +663,8 @@ func TestSnapshotRPC3B(t *testing.T) {
 		check(cfg, t, ck1, "1", "1")
 		check(cfg, t, ck1, "49", "49")
 	}
+
+	DPrintf("---- Everyone ----")
 
 	// now everybody
 	cfg.partition([]int{0, 1, 2}, []int{})
@@ -735,3 +741,6 @@ func TestSnapshotUnreliableRecoverConcurrentPartitionLinearizable3B(t *testing.T
 	// Test: unreliable net, restarts, partitions, snapshots, linearizability checks (3B) ...
 	GenericTestLinearizability(t, "3B", 15, 7, true, true, true, 1000)
 }
+
+/*
+ */

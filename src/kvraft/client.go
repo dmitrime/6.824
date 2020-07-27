@@ -1,13 +1,17 @@
 package kvraft
 
-import "../labrpc"
-import "crypto/rand"
-import "math/big"
-
+import (
+	"../labrpc"
+	"crypto/rand"
+	"math/big"
+	"time"
+)
 
 type Clerk struct {
 	servers []*labrpc.ClientEnd
-	// You will have to modify this struct.
+	leader  int
+	id      int64
+	counter int64
 }
 
 func nrand() int64 {
@@ -18,9 +22,12 @@ func nrand() int64 {
 }
 
 func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
-	ck := new(Clerk)
-	ck.servers = servers
-	// You'll have to add code here.
+	ck := &Clerk{
+		servers: servers,
+		leader:  0,
+		id:      nrand(),
+		counter: 0,
+	}
 	return ck
 }
 
@@ -37,9 +44,44 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 // arguments. and reply must be passed as a pointer.
 //
 func (ck *Clerk) Get(key string) string {
+	DPrintf("Clerk(%d) started Get(key=%s)\n", ck.id%100, key)
+	defer DPrintf("Clerk(%d) finished Get(key=%s)\n", ck.id%100, key)
 
-	// You will have to modify this function.
-	return ""
+	ck.counter += 1
+	var value string
+	peer := ck.leader
+	args := GetArgs{Key: key, OpNum: ck.counter, ClerkId: ck.id}
+	reply := GetReply{}
+	for quit, timeout := false, time.After(10*time.Second); !quit; {
+		select {
+		case <-timeout:
+			DPrintf("Clerk(%d)@%d timing out for Get(key=%s)", ck.id%100, ck.counter, key)
+			quit = true
+		default:
+			// DPrintf("Clerk(%d)@%d: starting Get(key=%s) to peer=%d", ck.id%100, ck.counter, key, peer)
+			ok := ck.servers[peer].Call("KVServer.Get", &args, &reply)
+			if !ok {
+				// DPrintf("Clerk(%d)@%d failed connecting to server %d", ck.id%100, ck.counter, peer)
+			} else {
+				if reply.Err == OK {
+					ck.leader = peer
+					value = reply.Value
+					DPrintf("Clerk(%d)@%d: finished Get(key=%s) to peer=%d", ck.id%100, ck.counter, key, peer)
+					quit = true
+				} else if reply.Err == ErrNoKey {
+					DPrintf("Key not found: %s", args.Key)
+					quit = true
+				} else if reply.Err != ErrWrongLeader {
+					DPrintf("Unknown error: %s", reply.Err)
+					quit = true
+				}
+			}
+			peer = (peer + 1) % len(ck.servers)
+			// DPrintf("Clerk(%d)@%d for Get(key=%s) moving on to peer=%d because err=%s", ck.id%100, ck.counter, key, peer, reply.Err)
+			time.Sleep(time.Duration(5) * time.Millisecond)
+		}
+	}
+	return value
 }
 
 //
@@ -53,7 +95,42 @@ func (ck *Clerk) Get(key string) string {
 // arguments. and reply must be passed as a pointer.
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
-	// You will have to modify this function.
+	DPrintf("Clerk(%d) started %s(key=%s,val='%s')\n", ck.id%100, op, key, value)
+	defer DPrintf("Clerk(%d) finished %s(key=%s,val='%s')\n", ck.id%100, op, key, value)
+
+	ck.counter += 1
+
+	peer := ck.leader
+	args := PutAppendArgs{Key: key, Value: value, Op: op, OpNum: ck.counter, ClerkId: ck.id}
+	reply := PutAppendReply{}
+
+	for quit, timeout := false, time.After(10*time.Second); !quit; {
+		select {
+		case <-timeout:
+			DPrintf("Clerk(%d)@%d timing out for %s(key=%s)", ck.id%100, ck.counter, op, key)
+			quit = true
+		default:
+			// DPrintf("Clerk(%d)@%d: starting %s(key=%s) to peer=%d", ck.id%100, ck.counter, op, key, peer)
+			ok := ck.servers[peer].Call("KVServer.PutAppend", &args, &reply)
+			if !ok {
+				// DPrintf("Clerk(%d)@%d failed connecting to server %d", ck.id%100, ck.counter, peer)
+			} else {
+				if reply.Err == OK {
+					ck.leader = peer
+					quit = true
+				} else if reply.Err == ErrDuplicate {
+					DPrintf("Got duplicate for key %s, server %d", args.Key, peer)
+					quit = true
+				} else if reply.Err != ErrWrongLeader {
+					DPrintf("Unknown error: %s", reply.Err)
+					quit = true
+				}
+			}
+			peer = (peer + 1) % len(ck.servers)
+			// DPrintf("Clerk(%d)@%d for %s(key=%s) moving on to peer=%d because err=%s", ck.id%100, ck.counter, op, key, peer, reply.Err)
+			time.Sleep(time.Duration(5) * time.Millisecond)
+		}
+	}
 }
 
 func (ck *Clerk) Put(key string, value string) {
