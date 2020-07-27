@@ -39,7 +39,9 @@ type Clerk struct {
 	sm       *shardmaster.Clerk
 	config   shardmaster.Config
 	make_end func(string) *labrpc.ClientEnd
-	// You will have to modify this struct.
+
+	id      int64
+	counter int64
 }
 
 //
@@ -55,7 +57,8 @@ func MakeClerk(masters []*labrpc.ClientEnd, make_end func(string) *labrpc.Client
 	ck := new(Clerk)
 	ck.sm = shardmaster.MakeClerk(masters)
 	ck.make_end = make_end
-	// You'll have to add code here.
+	ck.id = nrand()
+	ck.counter = 0
 	return ck
 }
 
@@ -66,12 +69,13 @@ func MakeClerk(masters []*labrpc.ClientEnd, make_end func(string) *labrpc.Client
 // You will have to modify this function.
 //
 func (ck *Clerk) Get(key string) string {
-	args := GetArgs{}
-	args.Key = key
+	ck.counter += 1
 
 	for {
 		shard := key2shard(key)
 		gid := ck.config.Shards[shard]
+		args := GetArgs{Key: key, ClerkId: ck.id, OpNum: ck.counter, Shard: shard, GID: gid}
+
 		if servers, ok := ck.config.Groups[gid]; ok {
 			// try each server for the shard.
 			for si := 0; si < len(servers); si++ {
@@ -100,15 +104,13 @@ func (ck *Clerk) Get(key string) string {
 // You will have to modify this function.
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
-	args := PutAppendArgs{}
-	args.Key = key
-	args.Value = value
-	args.Op = op
-
+	ck.counter += 1
 
 	for {
 		shard := key2shard(key)
 		gid := ck.config.Shards[shard]
+		args := PutAppendArgs{Op: op, Key: key, Value: value, ClerkId: ck.id, OpNum: ck.counter, Shard: shard, GID: gid}
+
 		if servers, ok := ck.config.Groups[gid]; ok {
 			for si := 0; si < len(servers); si++ {
 				srv := ck.make_end(servers[si])

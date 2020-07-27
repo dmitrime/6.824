@@ -10,23 +10,34 @@ package shardkv
 //
 
 const (
-	OK             = "OK"
-	ErrNoKey       = "ErrNoKey"
-	ErrWrongGroup  = "ErrWrongGroup"
-	ErrWrongLeader = "ErrWrongLeader"
+	OK                  = "OK"
+	ErrNoKey            = "ErrNoKey"
+	ErrWrongGroup       = "ErrWrongGroup"
+	ErrWrongLeader      = "ErrWrongLeader"
+	ErrShardReplicating = "ErrShardReplicating"
+)
+
+const (
+	GET    = "Get"
+	PUT    = "Put"
+	APPEND = "Append"
+	MOVE   = "Move"
+	CONFIG = "Config"
 )
 
 type Err string
 
 // Put or Append
 type PutAppendArgs struct {
-	// You'll have to add definitions here.
+	Op    string // "Put" or "Append"
 	Key   string
 	Value string
-	Op    string // "Put" or "Append"
-	// You'll have to add definitions here.
-	// Field names must start with capital letters,
-	// otherwise RPC will break.
+
+	Shard int
+	GID   int
+
+	OpNum   int64
+	ClerkId int64
 }
 
 type PutAppendReply struct {
@@ -35,10 +46,28 @@ type PutAppendReply struct {
 
 type GetArgs struct {
 	Key string
-	// You'll have to add definitions here.
+
+	Shard int
+	GID   int
+
+	OpNum   int64
+	ClerkId int64
 }
 
 type GetReply struct {
 	Err   Err
 	Value string
+}
+
+// Install shard
+type InstallShardArgs struct {
+	Shard     int
+	GID       int
+	Store     map[string]string
+	Commited  map[int64]int64
+	ConfigNum int
+}
+
+type InstallShardReply struct {
+	Err Err
 }

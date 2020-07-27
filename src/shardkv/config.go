@@ -251,7 +251,7 @@ func (cfg *config) StartServer(gi int, i int) {
 		})
 
 	kvsvc := labrpc.MakeService(gg.servers[i])
-	rfsvc := labrpc.MakeService(gg.servers[i].rf)
+	rfsvc := labrpc.MakeService(gg.servers[i].raft)
 	srv := labrpc.MakeServer()
 	srv.AddService(kvsvc)
 	srv.AddService(rfsvc)

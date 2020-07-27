@@ -1,15 +1,17 @@
 package shardkv
 
-import "../porcupine"
-import "../models"
-import "testing"
-import "strconv"
-import "time"
-import "fmt"
-import "sync/atomic"
-import "sync"
-import "math/rand"
-import "io/ioutil"
+import (
+	//"../models"
+	//"../porcupine"
+	"fmt"
+	//"io/ioutil"
+	//"math/rand"
+	"strconv"
+	//"sync"
+	//"sync/atomic"
+	"testing"
+	"time"
+)
 
 const linearizabilityCheckTimeout = 1 * time.Second
 
@@ -20,6 +22,7 @@ func check(t *testing.T, ck *Clerk, key string, value string) {
 	}
 }
 
+/*
 //
 // test static 2-way sharding, without shard movement.
 //
@@ -139,6 +142,7 @@ func TestJoinLeave(t *testing.T) {
 
 	fmt.Printf("  ... Passed\n")
 }
+*/
 
 func TestSnapshot(t *testing.T) {
 	fmt.Printf("Test: snapshots, join, and leave ...\n")
@@ -193,10 +197,12 @@ func TestSnapshot(t *testing.T) {
 
 	cfg.checklogs()
 
+	DPrintf("-------- Shutting down -----")
 	cfg.ShutdownGroup(0)
 	cfg.ShutdownGroup(1)
 	cfg.ShutdownGroup(2)
 
+	DPrintf("-------- Starting again -----")
 	cfg.StartGroup(0)
 	cfg.StartGroup(1)
 	cfg.StartGroup(2)
@@ -208,6 +214,7 @@ func TestSnapshot(t *testing.T) {
 	fmt.Printf("  ... Passed\n")
 }
 
+/*
 func TestMissChange(t *testing.T) {
 	fmt.Printf("Test: servers miss configuration changes...\n")
 
@@ -293,6 +300,7 @@ func TestMissChange(t *testing.T) {
 
 	fmt.Printf("  ... Passed\n")
 }
+
 
 func TestConcurrent1(t *testing.T) {
 	fmt.Printf("Test: concurrent puts and configuration changes...\n")
@@ -939,3 +947,4 @@ func TestChallenge2Partial(t *testing.T) {
 
 	fmt.Printf("  ... Passed\n")
 }
+*/
