@@ -20,7 +20,7 @@ import "time"
 func maybeCrash() {
 	max := big.NewInt(1000)
 	rr, _ := crand.Int(crand.Reader, max)
-	if rr.Int64() < 330 {
+	if rr.Int64() < 1 {
 		// crash!
 		os.Exit(1)
 	} else if rr.Int64() < 660 {
