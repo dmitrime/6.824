@@ -370,6 +370,7 @@ func (cfg *config) nCommitted(index int) (int, interface{}) {
 
 		cfg.mu.Lock()
 		cmd1, ok := cfg.logs[i][index]
+		// fmt.Println("---- -> ", i, cmd1, ok)
 		cfg.mu.Unlock()
 
 		if ok {
@@ -450,12 +451,16 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 			}
 		}
 
+		// DPrintf("---- Found leader, cmd position=%d\n", index)
+
 		if index != -1 {
 			// somebody claimed to be the leader and to have
 			// submitted our command; wait a while for agreement.
 			t1 := time.Now()
 			for time.Since(t1).Seconds() < 2 {
 				nd, cmd1 := cfg.nCommitted(index)
+				// DPrintf("---- How many commited=%d\n", nd)
+
 				if nd > 0 && nd >= expectedServers {
 					// committed
 					if cmd1 == cmd {
