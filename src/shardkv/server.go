@@ -24,8 +24,9 @@ type Op struct {
 	Store    map[string]string
 	Commited map[int64]int64
 
-	Config    *shardmaster.Config
-	ConfigNum int
+	Config     *shardmaster.Config
+	ConfigNum  int
+	ShardReady bool
 }
 
 type ShardKV struct {
@@ -38,11 +39,12 @@ type ShardKV struct {
 	make_end     func(string) *labrpc.ClientEnd
 	maxraftstate int // snapshot if log grows this big
 
-	gid                 int
-	sm                  *shardmaster.Clerk
-	config              shardmaster.Config
-	isConfigReplicating bool
-	shardConfigNum      [shardmaster.NShards]int // shard is being transferred
+	gid            int
+	sm             *shardmaster.Clerk
+	config         shardmaster.Config
+	shardConfigNum [shardmaster.NShards]int  // shard is being transferred
+	isShardReady   [shardmaster.NShards]bool // can use this shard
+	isShardMoving  [shardmaster.NShards]bool
 
 	cond        *sync.Cond                             // condition used for waiting on raft
 	inFlight    int                                    // number of messages this server is processing
@@ -66,17 +68,20 @@ func (kv *ShardKV) checkLeader(startTerm int) bool {
 }
 
 func (kv *ShardKV) submit(op Op) bool {
-	_, isLeader := kv.raft.GetState()
-	if !isLeader {
+	if _, isLeader := kv.raft.GetState(); !isLeader {
 		return false
 	}
 
 	kv.inFlight += 1
 	defer func() { kv.inFlight -= 1 }()
 
-	index, startTerm, isLeader := kv.raft.Start(op)
-	DPrintf("[%d][g=%d](shard=%d) Leader called with %s(%+v), shardConfigNum=%+v, promised index=%d, term=%d\n",
-		kv.me, kv.gid, op.Shard, op.Op, op, kv.shardConfigNum, index, startTerm)
+	index, startTerm, _ := kv.raft.Start(op)
+	DPrintf("[%d][g=%d](shard=%d) Leader called with %s(%+v), promised index=%d, term=%d",
+		kv.me, kv.gid, op.Shard, op.Op, op, index, startTerm)
+	if op.Shard >= 0 {
+		DPrintf("[%d][g=%d](shard=%d) Leader called with %s, map[shard]=%+v",
+			kv.me, kv.gid, op.Shard, op.Op, kv.store[op.Shard])
+	}
 
 	for count := 1; ; count++ {
 		// DPrintf("[%d] Gonna wait %d...%s(), buf=%d, index=%d, applied=%v", kv.me, count, op.Op, len(kv.lastApplied), index, kv.lastApplied)
@@ -84,7 +89,7 @@ func (kv *ShardKV) submit(op Op) bool {
 		// DPrintf("Done wait %d...", count)
 
 		if len(kv.lastApplied) > 0 && index == kv.lastApplied[0].CommandIndex {
-			DPrintf("Got our message, consuming index=%d", index)
+			DPrintf("[%d][g=%d] Got our message, consuming index=%d", kv.me, kv.gid, index)
 			kv.lastApplied = kv.lastApplied[1:]
 			break
 		}
@@ -93,11 +98,11 @@ func (kv *ShardKV) submit(op Op) bool {
 		if kv.inFlight < len(kv.lastApplied) {
 			n := len(kv.lastApplied) - kv.inFlight
 			kv.lastApplied = kv.lastApplied[n:]
-			DPrintf("[%d] Removed last %d applied messages", kv.me, n)
+			DPrintf("[%d][g=%d] Removed last %d applied messages", kv.me, kv.gid, n)
 		}
 
 		if !kv.checkLeader(startTerm) || kv.killed() {
-			DPrintf("[%d] Leader changed after waiting for %s() to finish", kv.me, op.Op)
+			DPrintf("[%d][g=%d] Leader changed after waiting for %s(%s:%s) to finish", kv.me, kv.gid, op.Op, op.Key, op.Value)
 			return false
 		}
 	}
@@ -116,18 +121,21 @@ func makeOp(
 	store map[string]string,
 	commited map[int64]int64,
 	config *shardmaster.Config,
-	configNum int) Op {
+	configNum int,
+	isShardReady bool,
+) Op {
 	return Op{
-		Op:        op,
-		Key:       key,
-		Value:     value,
-		Shard:     shard,
-		ClerkId:   clerkId,
-		OpNum:     opNum,
-		Store:     store,
-		Commited:  commited,
-		Config:    config,
-		ConfigNum: configNum,
+		Op:         op,
+		Key:        key,
+		Value:      value,
+		Shard:      shard,
+		ClerkId:    clerkId,
+		OpNum:      opNum,
+		Store:      store,
+		Commited:   commited,
+		Config:     config,
+		ConfigNum:  configNum,
+		ShardReady: isShardReady,
 	}
 }
 
@@ -137,20 +145,20 @@ func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 
 	gid, shard := args.GID, args.Shard
 	if err := kv.checkGidAndShard(gid, shard); err != OK {
-		DPrintf("[%d][g=%d] Error(%s) while serving shard(%d), configNum=%d, our shards=%+v",
-			kv.me, kv.gid, err, shard, kv.config.Num, getShardsForGid(&kv.config, kv.gid))
+		DPrintf("[%d][g=%d] [GET] Error(%s) serving shard(%d), configNum=%d, shards=%+v, configNums=%+v, shardReady=%+v",
+			kv.me, kv.gid, err, shard, kv.config.Num, getShardsForGid(&kv.config, kv.gid), kv.shardConfigNum, kv.isShardReady)
 		reply.Err = err
 		return
 	}
 
-	op := makeOp(GET, args.Key, "", args.Shard, args.ClerkId, args.OpNum, nil, nil, nil, -1)
+	op := makeOp(GET, args.Key, "", args.Shard, args.ClerkId, args.OpNum, nil, nil, nil, -1, false)
 	if ok := kv.submit(op); !ok {
 		reply.Err = ErrWrongLeader
 		return
 	}
 
 	if err := kv.checkGidAndShard(gid, shard); err != OK {
-		DPrintf("[%d][g=%d] Shard(%d) was moved while replicating %s(%s), our new shards=%+v",
+		DPrintf("[%d][g=%d] [GET] Shard(%d) was moved while replicating %s(%s), our new shards=%+v",
 			kv.me, kv.gid, shard, op.Op, op.Key, getShardsForGid(&kv.config, kv.gid))
 		reply.Err = err
 		return
@@ -174,20 +182,20 @@ func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 
 	gid, shard := args.GID, args.Shard
 	if err := kv.checkGidAndShard(gid, shard); err != OK {
-		DPrintf("[%d][g=%d] Error(%s) while serving shard(%d), configNum=%d, our shards=%+v",
-			kv.me, kv.gid, err, shard, kv.config.Num, getShardsForGid(&kv.config, kv.gid))
+		DPrintf("[%d][g=%d] [PUT] Error(%s) serving shard(%d), configNum=%d, shards=%+v, configNums=%+v, shardReady=%+v",
+			kv.me, kv.gid, err, shard, kv.config.Num, getShardsForGid(&kv.config, kv.gid), kv.shardConfigNum, kv.isShardReady)
 		reply.Err = err
 		return
 	}
 
-	op := makeOp(args.Op, args.Key, args.Value, args.Shard, args.ClerkId, args.OpNum, nil, nil, nil, -1)
+	op := makeOp(args.Op, args.Key, args.Value, args.Shard, args.ClerkId, args.OpNum, nil, nil, nil, -1, false)
 	if ok := kv.submit(op); !ok {
 		reply.Err = ErrWrongLeader
 		return
 	}
 
 	if err := kv.checkGidAndShard(gid, shard); err != OK {
-		DPrintf("[%d][g=%d] Shard(%d) was moved while replicating %s(%s:%s), our new shards=%+v",
+		DPrintf("[%d][g=%d] [PUT] Shard(%d) was moved while replicating %s(%s:%s), our new shards=%+v",
 			kv.me, kv.gid, shard, op.Op, op.Key, op.Value, getShardsForGid(&kv.config, kv.gid))
 		reply.Err = err
 		return
@@ -200,17 +208,40 @@ func (kv *ShardKV) checkGidAndShard(gid int, shard int) Err {
 	shards := getShardsForGid(&kv.config, kv.gid)
 	if kv.gid == gid {
 		_, ok := shards[shard]
-		if ok && (kv.shardConfigNum[shard] == 0 || kv.shardConfigNum[shard] == kv.config.Num) {
+		if ok && kv.isShardReady[shard] {
 			return OK
 		} else if !ok {
-			// DPrintf("ErrWrongGroup ---------- %+v ", kv.shardConfigNum)
 			return ErrWrongGroup
-		} else if kv.shardConfigNum[shard] != kv.config.Num {
-			// DPrintf("ErrShardReplicating ---------- %+v ", kv.shardConfigNum)
+		} else if !kv.isShardReady[shard] {
 			return ErrShardReplicating
 		}
 	}
 	return ErrWrongGroup
+}
+
+func (kv *ShardKV) makeSnapshot(lastIndex int) {
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(kv.store)
+	e.Encode(kv.commited)
+	e.Encode(kv.config)
+	e.Encode(kv.shardConfigNum)
+	e.Encode(kv.isShardReady)
+
+	kv.raft.MakeSnapshot(w.Bytes(), lastIndex)
+}
+
+func (kv *ShardKV) installSnapshot(snapshot []byte) {
+	r := bytes.NewBuffer(snapshot)
+	d := labgob.NewDecoder(r)
+
+	d.Decode(&kv.store)
+	d.Decode(&kv.commited)
+	d.Decode(&kv.config)
+	d.Decode(&kv.shardConfigNum)
+	d.Decode(&kv.isShardReady)
+
+	DPrintf("[%d][g=%d] Loaded snapshot with config=%+v", kv.me, kv.gid, kv.config)
 }
 
 func (kv *ShardKV) isDuplicate(cmd *Op) bool {
@@ -224,21 +255,30 @@ func (kv *ShardKV) isDuplicate(cmd *Op) bool {
 func (kv *ShardKV) applyCommand(cmd *Op) {
 	shard := cmd.Shard
 	if cmd.Op == MOVE {
-		// DPrintf("[%d][g=%d] Installing new shard(%d), store=%+v, commited=%+v", kv.me, kv.gid, shard, cmd.Store, cmd.Commited)
 		if cmd.ConfigNum > kv.shardConfigNum[shard] {
 			kv.shardConfigNum[shard] = cmd.ConfigNum
-			kv.store[shard] = cmd.Store
-			kv.commited[shard] = cmd.Commited
-			DPrintf("[%d][g=%d] Updating shard(%d) for configNum=%d.", kv.me, kv.gid, shard, cmd.ConfigNum)
+			kv.store[shard] = copyStringMap(&cmd.Store)
+			kv.commited[shard] = copyInt64Map(&cmd.Commited)
+			kv.isShardReady[shard] = cmd.ShardReady
+			DPrintf("[%d][g=%d] Applied shard(%d), configNum=%d, ShardReady=%t", kv.me, kv.gid, shard, cmd.ConfigNum, cmd.ShardReady)
 		}
 	} else if cmd.Op == CONFIG {
-		// DPrintf("[%d][g=%d] Installing new config: %+v", kv.me, kv.gid, cmd.Config)
 		kv.config = *cmd.Config
-		kv.isConfigReplicating = false
+
+		if kv.config.Num == 1 {
+			for shard := 0; shard < shardmaster.NShards; shard++ {
+				if kv.config.Shards[shard] == kv.gid {
+					kv.shardConfigNum[shard] = 1
+					kv.isShardReady[shard] = true
+				}
+			}
+		}
+		DPrintf("[%d][g=%d] Applied new config=%+v", kv.me, kv.gid, kv.config)
 	} else if !kv.isDuplicate(cmd) {
 		if cmd.Op == PUT {
 			kv.store[shard][cmd.Key] = cmd.Value
 		} else if cmd.Op == APPEND {
+			DPrintf("[%d][g=%d] Appended to shard(%d): %s:%s + %s", kv.me, kv.gid, shard, cmd.Key, kv.store[shard][cmd.Key], cmd.Value)
 			kv.store[shard][cmd.Key] += cmd.Value
 		}
 		// for duplicate detection
@@ -246,23 +286,11 @@ func (kv *ShardKV) applyCommand(cmd *Op) {
 	}
 }
 
-func (kv *ShardKV) makeSnapshot(lastIndex int) {
-	w := new(bytes.Buffer)
-	e := labgob.NewEncoder(w)
-	e.Encode(kv.store)
-	e.Encode(kv.commited)
-	e.Encode(kv.config)
-	e.Encode(kv.isConfigReplicating)
-	//e.Encode(kv.shardConfigNum)
-
-	kv.raft.MakeSnapshot(w.Bytes(), lastIndex)
-}
-
 func (kv *ShardKV) processAppliedCommands() {
 	for msg := range kv.applyCh {
 		select {
 		case <-kv.shutdownCh:
-			DPrintf("ShardMaster[%d].processAppliedCommands() shutting down...", kv.me)
+			DPrintf("[%d][g=%d] ShardMaster.processAppliedCommands() shutting down...", kv.me, kv.gid)
 			return
 		default:
 			if msg.CommandValid {
@@ -294,32 +322,21 @@ func (kv *ShardKV) processAppliedCommands() {
 	}
 }
 
-func (kv *ShardKV) installSnapshot(snapshot []byte) {
-	r := bytes.NewBuffer(snapshot)
-	d := labgob.NewDecoder(r)
-
-	d.Decode(&kv.store)
-	d.Decode(&kv.commited)
-	d.Decode(&kv.config)
-	d.Decode(&kv.isConfigReplicating)
-	//d.Decode(&kv.shardConfigNum)
-	for i := 0; i < shardmaster.NShards; i++ {
-		kv.shardConfigNum[i] = kv.config.Num
-	}
-
-	DPrintf("[%d][g=%d] Loaded snapshot with config=%+v, shardConfigNum=%+v", kv.me, kv.gid, kv.config, kv.shardConfigNum)
-}
-
 func (kv *ShardKV) HandleInstallShard(args *InstallShardArgs, reply *InstallShardReply) {
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
-
 	if args.GID != kv.gid {
 		reply.Err = ErrWrongGroup
 		return
 	}
 
-	op := makeOp(MOVE, "", "", args.Shard, -1, -1, args.Store, args.Commited, nil, args.ConfigNum)
+	if _, isLeader := kv.raft.GetState(); !isLeader {
+		return
+	}
+
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	DPrintf("[%d][g=%d] Receiving(conf=%d) shard(%d) to our group(%d)", kv.me, kv.gid, kv.config.Num, args.Shard, args.GID)
+	op := makeOp(MOVE, "", "", args.Shard, -1, -1, args.Store, args.Commited, nil, args.ConfigNum, true)
 	if ok := kv.submit(op); !ok {
 		reply.Err = ErrWrongLeader
 		return
@@ -329,40 +346,64 @@ func (kv *ShardKV) HandleInstallShard(args *InstallShardArgs, reply *InstallShar
 	reply.Err = OK
 }
 
-func (kv *ShardKV) transferShards(move map[int]int) {
-	var wg sync.WaitGroup
+func copyStringMap(m *map[string]string) map[string]string {
+	store := make(map[string]string)
+	for k, v := range *m {
+		store[k] = v
+	}
+	return store
+}
 
-	for shard, group := range move {
-		wg.Add(1)
+func copyInt64Map(m *map[int64]int64) map[int64]int64 {
+	commited := make(map[int64]int64)
+	for k, v := range *m {
+		commited[k] = v
+	}
+	return commited
+}
 
-		go func(shard int, group int) {
-			defer wg.Done()
-
-			kv.mu.Lock()
-			args := InstallShardArgs{
-				GID:       group,
-				Shard:     shard,
-				Store:     kv.store[shard],
-				Commited:  kv.commited[shard],
-				ConfigNum: kv.config.Num,
-			}
-			servers := kv.config.Groups[group]
-			kv.mu.Unlock()
-
-			DPrintf("[%d][g=%d] Transferring shard(%d) to group(%d)...", kv.me, kv.gid, shard, group)
-			for s := 0; s < len(servers); s++ {
-				srv := kv.make_end(servers[s])
-				var reply InstallShardReply
-				ok := srv.Call("ShardKV.HandleInstallShard", &args, &reply)
-				if ok && reply.Err == OK {
-					DPrintf("[%d][g=%d] Done transfer for shard(%d) to group(%d)", kv.me, kv.gid, shard, group)
-					break
-				}
-			}
-		}(shard, group)
+func (kv *ShardKV) transferShard(shard int, group int) {
+	if _, isLeader := kv.raft.GetState(); !isLeader {
+		return
 	}
 
-	wg.Wait()
+	kv.mu.Lock()
+	kv.isShardMoving[shard] = true
+	args := InstallShardArgs{
+		GID:       group,
+		Shard:     shard,
+		Store:     copyStringMap(&kv.store[shard]),
+		Commited:  copyInt64Map(&kv.commited[shard]),
+		ConfigNum: kv.config.Num,
+	}
+	servers := kv.config.Groups[group]
+	kv.mu.Unlock()
+
+	DPrintf("[%d][g=%d] Attempting to transfer shard(%d) to group(%d)...", kv.me, kv.gid, shard, group)
+	success := false
+	for s := 0; s < len(servers); s++ {
+		srv := kv.make_end(servers[s])
+		var reply InstallShardReply
+		ok := srv.Call("ShardKV.HandleInstallShard", &args, &reply)
+		if ok && reply.Err == OK {
+			DPrintf("[%d][g=%d] Done transfer for shard(%d) to group(%d)", kv.me, kv.gid, shard, group)
+			success = true
+			break
+		}
+	}
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	defer func() { kv.isShardMoving[shard] = false }()
+
+	if !success {
+		DPrintf("[%d][g=%d] FAILED to transfer for shard(%d) to group(%d)", kv.me, kv.gid, shard, group)
+		return
+	} else {
+		op := makeOp(MOVE, "", "", args.Shard, -1, -1, make(map[string]string), make(map[int64]int64), nil, args.ConfigNum, false)
+		if ok := kv.submit(op); !ok {
+			return
+		}
+	}
 }
 
 func getShardsForGid(config *shardmaster.Config, gid int) map[int]int {
@@ -375,72 +416,48 @@ func getShardsForGid(config *shardmaster.Config, gid int) map[int]int {
 	return shards
 }
 
-func unchangedShards(newConfig *shardmaster.Config, oldConfig *shardmaster.Config, gid int) []int {
-	newShards := []int{}
-	for shard := 0; shard < shardmaster.NShards; shard++ {
-		if oldConfig.Shards[shard] == newConfig.Shards[shard] && newConfig.Shards[shard] == gid {
-			newShards = append(newShards, shard)
-		}
-	}
-	return newShards
-}
-
-func shardsToMove(newConfig *shardmaster.Config, oldConfig *shardmaster.Config, gid int) (bool, map[int]int) {
+func (kv *ShardKV) shardsToMove() map[int]int {
 	move := map[int]int{}
 	for shard := 0; shard < shardmaster.NShards; shard++ {
-		if oldConfig.Shards[shard] != newConfig.Shards[shard] && oldConfig.Shards[shard] == gid {
-			move[shard] = newConfig.Shards[shard]
+		if kv.config.Num > kv.shardConfigNum[shard] && kv.isShardReady[shard] && kv.config.Shards[shard] != kv.gid {
+			move[shard] = kv.config.Shards[shard]
 		}
 	}
-	return len(move) > 0, move
-}
-
-func (kv *ShardKV) isShardsReplicating() bool {
-	shards := getShardsForGid(&kv.config, kv.gid)
-	for s, _ := range shards {
-		if kv.shardConfigNum[s] != 0 && kv.shardConfigNum[s] != kv.config.Num {
-			return true
-		}
+	if len(move) > 0 {
+		DPrintf("[%d][g=%d] Found shards to move: %+v", kv.me, kv.gid, move)
 	}
-	return false
+	return move
 }
 
 func (kv *ShardKV) reconfigure() {
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
-
 	if _, isLeader := kv.raft.GetState(); !isLeader {
 		return
 	}
 
-	if kv.isConfigReplicating || kv.isShardsReplicating() {
-		return
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	latest := -1
+	if kv.config.Num == 0 {
+		latest = 1
 	}
 
-	conf := kv.sm.Query(-1)
+	conf := kv.sm.Query(latest)
 	if conf.Num > kv.config.Num {
 		DPrintf("[%d][g=%d] Replicating new config: %+v, old config: %+v", kv.me, kv.gid, conf, kv.config)
-		oldConfig := kv.config
-
-		// lock config until replicated
-		kv.isConfigReplicating = true
 
 		// replicate new config
-		op := makeOp(CONFIG, "", "", -1, -1, -1, nil, nil, &conf, -1)
+		op := makeOp(CONFIG, "", "", -1, -1, -1, nil, nil, &conf, -1, false)
 		if ok := kv.submit(op); !ok {
 			return
 		}
+	}
 
-		// update config num for shards that stay same
-		for _, s := range unchangedShards(&conf, &oldConfig, kv.gid) {
-			kv.shardConfigNum[s] = kv.config.Num
-		}
-		DPrintf("[%d][g=%d] Conf=%d, after updating same shardConfigNum: %+v", kv.me, kv.gid, kv.config.Num, kv.shardConfigNum)
-
-		// if needed, move shards from this group to others
-		if ok, move := shardsToMove(&conf, &oldConfig, kv.gid); ok {
-			DPrintf("[%d][g=%d] Config changed, moving shards: %+v", kv.me, kv.gid, move)
-			go kv.transferShards(move)
+	// if needed, move shards from this group to others
+	for shard, group := range kv.shardsToMove() {
+		if !kv.isShardMoving[shard] {
+			DPrintf("[%d][g=%d] Reconfigure(%d): moving shard(%d) to group(%d)", kv.me, kv.gid, kv.config.Num, shard, group)
+			go kv.transferShard(shard, group)
 		}
 	}
 }
@@ -449,7 +466,7 @@ func (kv *ShardKV) refreshConfig() {
 	for {
 		select {
 		case <-kv.shutdownCh:
-			DPrintf("ShardKV[%d].refreshConfig() shutting down...", kv.me)
+			DPrintf("[%d][g=%d] ShardKV.refreshConfig() shutting down...", kv.me, kv.gid)
 			return
 		default:
 			// periodically poll the shardmaster for new config
@@ -463,7 +480,7 @@ func (kv *ShardKV) refreshBroadcast() {
 	for {
 		select {
 		case <-kv.shutdownCh:
-			DPrintf("ShardKV[%d].refreshBroadcast() shutting down...", kv.me)
+			DPrintf("[%d][g=%d] ShardKV.refreshBroadcast() shutting down...", kv.me, kv.gid)
 			return
 		default:
 			// periodically wake up server waiting on cond to unblock client calls

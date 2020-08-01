@@ -1,14 +1,14 @@
 package shardkv
 
 import (
-	//"../models"
-	//"../porcupine"
+	"../models"
+	"../porcupine"
 	"fmt"
-	//"io/ioutil"
-	//"math/rand"
+	"io/ioutil"
+	"math/rand"
 	"strconv"
-	//"sync"
-	//"sync/atomic"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -142,7 +142,6 @@ func TestJoinLeave(t *testing.T) {
 
 	fmt.Printf("  ... Passed\n")
 }
-*/
 
 func TestSnapshot(t *testing.T) {
 	fmt.Printf("Test: snapshots, join, and leave ...\n")
@@ -214,7 +213,6 @@ func TestSnapshot(t *testing.T) {
 	fmt.Printf("  ... Passed\n")
 }
 
-/*
 func TestMissChange(t *testing.T) {
 	fmt.Printf("Test: servers miss configuration changes...\n")
 
@@ -242,6 +240,7 @@ func TestMissChange(t *testing.T) {
 	cfg.ShutdownServer(0, 0)
 	cfg.ShutdownServer(1, 0)
 	cfg.ShutdownServer(2, 0)
+	DPrintf("------------ Servers 0 shutdown --------")
 
 	cfg.join(2)
 	cfg.leave(1)
@@ -266,6 +265,7 @@ func TestMissChange(t *testing.T) {
 	cfg.StartServer(0, 0)
 	cfg.StartServer(1, 0)
 	cfg.StartServer(2, 0)
+	DPrintf("------------ Servers 0 started --------")
 
 	for i := 0; i < n; i++ {
 		check(t, ck, ka[i], va[i])
@@ -275,6 +275,8 @@ func TestMissChange(t *testing.T) {
 	}
 
 	time.Sleep(2 * time.Second)
+
+	DPrintf("------------ Servers 1 shutdown --------")
 
 	cfg.ShutdownServer(0, 1)
 	cfg.ShutdownServer(1, 1)
@@ -294,13 +296,14 @@ func TestMissChange(t *testing.T) {
 	cfg.StartServer(1, 1)
 	cfg.StartServer(2, 1)
 
+	DPrintf("------------ Servers 1 started --------")
+
 	for i := 0; i < n; i++ {
 		check(t, ck, ka[i], va[i])
 	}
 
 	fmt.Printf("  ... Passed\n")
 }
-
 
 func TestConcurrent1(t *testing.T) {
 	fmt.Printf("Test: concurrent puts and configuration changes...\n")
@@ -434,9 +437,11 @@ func TestConcurrent2(t *testing.T) {
 	cfg.leave(2)
 	time.Sleep(3000 * time.Millisecond)
 
+	DPrintf("--------- Shutdown group 1, 2 ---------")
 	cfg.ShutdownGroup(1)
 	cfg.ShutdownGroup(2)
 	time.Sleep(1000 * time.Millisecond)
+	DPrintf("--------- Start group 1, 2 ---------")
 	cfg.StartGroup(1)
 	cfg.StartGroup(2)
 
@@ -453,7 +458,9 @@ func TestConcurrent2(t *testing.T) {
 
 	fmt.Printf("  ... Passed\n")
 }
+*/
 
+/*
 func TestUnreliable1(t *testing.T) {
 	fmt.Printf("Test: unreliable 1...\n")
 
@@ -558,6 +565,7 @@ func TestUnreliable2(t *testing.T) {
 
 	fmt.Printf("  ... Passed\n")
 }
+*/
 
 func TestUnreliable3(t *testing.T) {
 	fmt.Printf("Test: unreliable 3...\n")
@@ -664,6 +672,7 @@ func TestUnreliable3(t *testing.T) {
 	fmt.Printf("  ... Passed\n")
 }
 
+/*
 //
 // optional test to see whether servers are deleting
 // shards for which they are no longer responsible.
@@ -816,6 +825,7 @@ func TestChallenge1Concurrent(t *testing.T) {
 
 	fmt.Printf("  ... Passed\n")
 }
+*/
 
 //
 // optional test to see whether servers can handle
@@ -947,4 +957,6 @@ func TestChallenge2Partial(t *testing.T) {
 
 	fmt.Printf("  ... Passed\n")
 }
-*/
+
+/*
+ */
